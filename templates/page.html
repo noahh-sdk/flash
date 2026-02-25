@@ -1,0 +1,30 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    {head_content}
+</head>
+<body class="flash-theme-dark line-numbers">
+    <nav class="collapsed">
+        <header>
+            <a href="{output_url}/">
+                {project_icon} {project_name} Docs
+                <span class="version">{project_version}</span>
+            </a>
+            <a href="{project_repository}" class="button"><i data-feather="github"></i></a>
+        </header>
+        {navbar_content}
+    </nav>
+    <main>
+        {main_content}
+    </main>
+    <div class="overlay theme">
+        <button data-pick-theme="dark" class="selected"><i data-feather="moon"></i></button>
+        <button data-pick-theme="peach"><i data-feather="feather"></i></button>
+        <button data-pick-theme="ocean"><i data-feather="umbrella"></i></button>
+    </div>
+    <div class="overlay menu">
+        <button onclick="toggleMenu()"><i data-feather="menu"></i></button>
+    </div>
+</body>
+</html>

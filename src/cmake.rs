@@ -1,0 +1,127 @@
+use serde::Deserialize;
+use std::{fs, path::PathBuf, process::Command, sync::Arc};
+
+use crate::config::Config;
+
+#[derive(Deserialize, Clone)]
+pub struct CompileCommand {
+    pub directory: PathBuf,
+    pub command: String,
+    pub file: PathBuf,
+}
+
+impl CompileCommand {
+    pub fn get_command_list(&self, config: Arc<Config>) -> Vec<String> {
+        // regex for defines with \"\" escaping, since the slashes seem to be doubled for some reason
+        let define_regex = regex_lite::Regex::new("^-D(.+)=\\\\\"(.+)\\\\\"$").unwrap();
+
+        // Not using shlex because that screws up -DFMT_CONSTEVAL=\"\"
+        let mut list: Vec<String> = self.command.split(' ')
+            // Skip clang.exe
+            .skip(1)
+            .flat_map(|s|
+                // Expand .rsp files into their include directives
+                // For some reason LibClang just doesn't want to work with the .rsp 
+                // files so got to do this
+                if s.ends_with(".rsp") {
+                    fs::read_to_string(
+                        self.directory.join(s.replace('@', ""))
+                    ).expect("Unable to read compiler .rsp includes file")
+                        .split(' ')
+                        .map(|s| s.to_owned())
+                        .collect()
+                } else {
+                    // Hacky fix to make sure -DMACRO="" defines MACRO as empty and not as ""
+                    vec![s.to_owned().replace("=\"\"", "=")]
+                }
+            )
+            .map(|arg| {
+                let caps = define_regex.captures(&arg);
+                if let Some(caps) = caps {
+                    let name = caps.get(1).unwrap().as_str();
+                    let value = caps.get(2).unwrap().as_str();
+                    format!("-D{name}=\"{value}\"")
+                } else {
+                    arg
+                }
+            })
+            // Add header root to include directories
+            .chain(vec![format!("-I{}", config.input_dir.to_str().unwrap())])
+            // Set working directory
+            .chain(vec![format!("-working-directory={}", self.directory.to_str().unwrap())])
+            // Add extra compile args
+            .chain(config.analysis.compile_args.clone())
+            // Retain comments from external libraries that might be included in the docs
+            .chain(vec!["-fretain-comments-from-system-headers".into()])
+            .collect();
+
+        // Passing -c crashes LibClang
+        while let Some(ix) = list.iter().position(|s| s == "-c") {
+            list.drain(ix..ix + 2);
+        }
+
+        list.push("-ferror-limit=200".into());
+
+        list
+    }
+}
+
+type CompileCommands = Vec<CompileCommand>;
+
+pub fn cmake_configure(build_dir: &str, args: &Vec<String>) -> Result<(), String> {
+    Command::new("cmake")
+        .arg(".")
+        .args(["-B", build_dir])
+        .args(args)
+        .spawn()
+        .map_err(|e| format!("Error configuring CMake: {e}"))?
+        .wait()
+        .unwrap()
+        .success()
+        .then_some(())
+        .ok_or("CMake configure failed".into())
+}
+
+pub fn cmake_build(build_dir: &str, args: &Vec<String>) -> Result<(), String> {
+    Command::new("cmake")
+        .args(["--build", build_dir])
+        .args(args)
+        .spawn()
+        .map_err(|e| format!("Error building CMake: {e}"))?
+        .wait()
+        .unwrap()
+        .success()
+        .then_some(())
+        .ok_or("CMake build failed".into())
+}
+
+pub fn cmake_compile_commands(config: Arc<Config>) -> Result<CompileCommands, String> {
+    serde_json::from_str(
+        &fs::read_to_string(
+            config
+                .input_dir
+                .join(&config.cmake.as_ref().unwrap().build_dir)
+                .join("compile_commands.json"),
+        )
+        .map_err(|e| format!("Unable to read compile_commands.json: {e}"))?,
+    )
+    .map_err(|e| format!("Unable to parse compile_commands.json: {e}"))
+}
+
+pub fn cmake_compile_args_for(config: Arc<Config>) -> Result<Vec<String>, String> {
+    let from = &config
+        .cmake
+        .as_ref()
+        .ok_or(String::from("Project does not use CMake"))?
+        .infer_args_from;
+    for cmd in cmake_compile_commands(config.clone())? {
+        if cmd.file == config.input_dir.join(from) {
+            return Ok(cmd.get_command_list(config));
+        }
+    }
+
+    Err(format!(
+        "Unable to find compile args for '{}'",
+        config.input_dir.join(from).to_string_lossy()
+    ))
+}
